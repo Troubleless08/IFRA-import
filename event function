@@ -1,0 +1,902 @@
+Class Event_Script Inherits Resource_Event_Scripts
+	Function EventScript(form As FormResource, param As Object)
+	
+	'Requires primary key to reference data. Value is entered in "R-LMID" property field
+ 
+ If Me.Resource.Properties.Contains("R-LMID") AndAlso Me.Resource.Properties.GetItem("R-LMID").Value <> String.Empty Then		
+			Dim thisLM As System.String = Me.Resource.Properties.GetItem("R-LMID").Value
+      
+      'key found, so declare globals, grab current time (for change comparison query), and prepare dialog
+      
+      Const TITLE = "IFRA Labelling Manual Import"
+      Dim toxNotes As New System.Text.StringBuilder	
+			Dim newDate As System.String = System.DateTime.Now.ToShortDateString	
+			Dim icon = System.Windows.Forms.MessageBoxIcon.Exclamation
+			Dim message As String = String.Format("This will import resource properties from the IFRA Labelling Manual and requires a valid LMID code (R-LMID). {0}{0}Would you like to continue?", Me.CRLF)	
+			Dim dialog As System.Windows.Forms.DialogResult = System.Windows.Forms.MessageBox.Show (message , _
+				TITLE, System.Windows.Forms.MessageBoxButtons.YesNo , _
+				icon)			
+		
+    'if user wishes to proceed
+   
+   If dialog = System.Windows.Forms.DialogResult.Yes Then		
+   
+   'clear notes for change comparison query and create dt
+			
+        Me.Resource.Properties.GetItem("RLC50GAS").Note = String.Empty
+				Me.Resource.Properties.GetItem("RLC50DUST").Note = String.Empty
+				Me.Resource.Properties.GetItem("RLC50VAPOR").Note = String.Empty
+				Me.Resource.Properties.GetItem("RLD50DERMAL").Note = String.Empty
+				Me.Resource.Properties.GetItem("RLD50ORAL").Note = String.Empty
+				Dim dtData As System.Data.DataTable
+			
+				'Import from database table Sheet1 into datatable	
+				With New AdvancedSoftwareDesigns.SQL.Commands.Select(BusinessObjects.GlobalApp.SqlFactory)
+					.From.Add("Sheet2")
+					.Column.Add("CasNo")
+					.Column.Add("AltCasNo")
+					.Column.Add("LMID")
+					.Column.Add("PName")
+					.Column.Add("GHSClass")
+					.Column.Add("GHSHazCodes")
+					.Column.Add("LD50Oral")
+					.Column.Add("ATEOral")
+					.Column.Add("LD50Dermal")
+					.Column.Add("ATEDermal")
+					.Column.Add("LC50Vapor")
+					.Column.Add("ATEVapor")
+					.Column.Add("LC50Dust")
+					.Column.Add("ATEDust")
+					.Column.Add("LC50Gas")
+					.Column.Add("ATEGas")
+					.Column.Add("MFactor")
+					.Column.Add("GHSSigWord")
+					.Column.Add("GHSPictoCode")
+					.Column.Add("Flashpoint")
+					.Column.Add("Hydrocarbons")
+				With .Where
+						With .Add
+							.ExprLeft("LMID")
+							.Parameters.Add(thisLM)
+						End With 		
+					End With
+					dtData = BusinessObjects.GlobalApp.QueryServer.ExecuteSync(.Me)
+				End With
+
+				'IFRA Standards Import'
+
+				'We will use the value stored here twice, once for property and again for GHS statements
+				'********************BEGIN PROPERTY IMPORTS********************************'
+				
+        'grab resource CAS number from table if empty
+        If Me.Resource.CasNumber Is Nothing OrElse Me.Resource.CasNumber = String.Empty Then
+					Dim casNum = dtData.Rows.Item(0).Item("CasNo")				
+				
+        If Not system.DbNull.Value.Equals(casNum) Then					
+						If casNum IsNot Nothing AndAlso casNum <> String.Empty Then		
+							Me.Resource.CasNumber = dtData.Rows.Item(0).Item("CasNo")			
+						Else
+							Dim altCasNum = dtData.Rows.Item(0).Item("AltCasNo")
+							If AltcasNum IsNot Nothing AndAlso AltcasNum <> String.Empty Then	
+								Me.Resource.CasNumber = dtData.Rows.Item(0).Item("AltCasNo")
+							End If
+						End If
+					End If
+				End If	
+        
+				'grab Name/Description from table if empty
+				If Me.Resource.Descriptions.StandardDescription.Text Is Nothing OrElse Me.Resource.Descriptions.StandardDescription.Text = String.Empty  Then
+					Dim PName = dtData.Rows.Item(0).Item("PName")
+					If Not system.DbNull.Value.Equals(PName) Then
+						If PName IsNot Nothing AndAlso PName <> String.Empty Then		
+							Me.Resource.Descriptions.StandardDescription.Text = dtData.Rows.Item(0).Item("PName")			
+						End If
+					End If		
+				End If
+        
+				'Classifications
+				If Me.Resource.Properties.Contains("RLABELINGMC") Then
+					Dim ghsClass = dtData.Rows.Item(0).Item("GHSClass")
+					If Not system.DbNull.Value.Equals(ghsClass) Then
+						If ghsClass IsNot Nothing AndAlso ghsClass <> String.Empty Then
+							Me.Resource.Properties.GetItem("RLABELINGMC").Value = ghsClass		
+						End If
+					End If
+				End If
+        
+				'H Codes
+				If Me.Resource.Properties.Contains("RIFRAHAZ") Then
+					Dim ghsHazCodes = dtData.Rows.Item(0).Item("GHSHazCodes")
+					If Not system.DbNull.Value.Equals(ghsHazCodes) Then
+						If ghsHazCodes IsNot Nothing AndAlso ghsHazCodes <> String.Empty Then
+							Me.Resource.Properties.GetItem("RIFRAHAZ").Value = ghsHazCodes	
+						End If
+					End If		
+				End If
+        
+				'Hydrocarbons
+				If Me.Resource.Properties.Contains("R-HYDROCARB(ASP-HAZ)") Then
+					Dim Hydrocarbons = dtData.Rows.Item(0).Item("Hydrocarbons")
+					If Not system.DbNull.Value.Equals(Hydrocarbons) Then
+						Hydrocarbons = CDbl(Hydrocarbons)
+						If Hydrocarbons IsNot Nothing AndAlso Hydrocarbons > 0 Then
+							Me.Resource.Properties.GetItem("R-HYDROCARB(ASP-HAZ)").Value = Hydrocarbons	
+						End If
+					End If		
+				End If
+        
+				'M Factor
+				If Me.Resource.Properties.Contains("RM-FACTOR") Then 			
+					Dim mString = dtData.Rows.Item(0).Item("MFactor")
+					If Not system.DbNull.Value.Equals(mString) Then		
+						If mString IsNot String.Empty AndAlso mString.Contains(";") Then
+							Dim	newString() = mString.Split(";")
+							Dim acuteValue = Nothing	
+							Dim chronicValue = Nothing				
+							For i As Integer = 0 To newString.Length - 1
+								Dim pString = newString(i).ToString.ToLower.Trim			
+								If pString.Contains("acute") Then
+									pString = pString.Replace("acute", "")
+									acuteValue = pString.Trim
+									If acuteValue.Contains(";") Then
+										acuteValue = acuteValue.Replace(";", "")
+									End If
+								ElseIf pString.Contains("chronic") Then
+									pString = pString.Replace("chronic", "")		
+									chronicValue = pString.Trim
+									If chronicValue.Contains(";") Then
+										chronicValue = chronicValue.Replace(";", "")
+									End If
+								End If
+							Next		
+              
+							If acuteValue IsNot Nothing Then
+								Me.Resource.Properties.GetItem("RM-FACTOR").Value = acuteValue.Trim 					
+							End If
+							If chronicValue IsNot Nothing Then
+								Me.Resource.Properties.GetItem("RM-FACTORCHRONIC").Value = chronicValue.Trim
+							End If
+              
+						Else
+            
+							If mString IsNot String.Empty Then
+								mString = mString.ToLower.Trim.Replace("acute", "")
+								If mString.Contains(";") Then
+									mString = mString.Replace(";", "")
+								End If
+								Me.Resource.Properties.GetItem("RM-FACTOR").Value = mString.Trim
+							End If			
+						End If				
+					End If
+				End If
+			
+				'Oral ATE
+				If Me.Resource.Properties.Contains("RLD50ORAL") Then 
+					Dim ATEOral = dtData.Rows.Item(0).Item("ATEOral")
+					Dim ld50Oral = dtData.Rows.Item(0).Item("LD50Oral")
+					If (Not system.DbNull.Value.Equals(ld50Oral)) AndAlso ld50Oral IsNot Nothing AndAlso ld50Oral <> String.Empty Then				
+						Dim currentValue As System.String = String.Empty
+						
+            If Me.Resource.Properties.GetItem("RLD50ORAL").Value IsNot Nothing AndAlso Me.Resource.Properties.GetItem("RLD50ORAL").Value <> String.Empty Then
+							currentValue = Me.Resource.Properties.GetItem("RLD50ORAL").ValueText.Trim		
+						End If
+            
+						Dim thisValue As System.String = currentValue
+            
+            'necessary to clean value string due to historic inconsistancies with data entry and IFRA manual
+           
+           Select Case True
+            Case thisValue.Contains(">")
+						thisValue = thisValue.Replace(">", "")
+            Case thisValue.Contains("<")
+						thisValue = thisValue.Replace("<", "")
+            Case thisValue.Contains("mg/kg")
+						thisValue = thisValue.Replace("mg/kg", "")
+            Case thisValue.Contains("mL/kg")
+						thisValue = thisValue.Replace("mL/kg", "")
+            Case thisValue.Contains("mg/l")
+						thisValue = thisValue.Replace("mg/l", "")
+            Case thisValue.Contains("mg/L")
+						thisValue = thisValue.Replace("mg/L", "")
+            Case thisValue.Contains("ppm")
+						thisValue = thisValue.Replace("ppm", "")
+            Case thisValue.Contains("Rat")
+						thisValue = thisValue.Replace("Rat", "")
+            Case thisValue.Contains("rat")
+						thisValue = thisValue.Replace("rat", "")
+            Case thisValue.Contains("Rabbit")
+						thisValue = thisValue.Replace("Rabbit", "")
+            Case thisValue.Contains("rabbit")
+						thisValue = thisValue.Replace("rabbit", "")
+            End Select
+            
+						thisValue = thisValue.Trim		
+            
+						Dim newValue As System.String = CStr(ld50Oral)
+						If newValue.Trim <> thisValue Then	
+							If toxNotes.Length > 0 Then
+								toxNotes.Append("; ")
+							End If	
+							If Me.Resource.Properties.GetItem("RLD50ORAL").Overridden = True Then
+								toxNotes.Append("RLD50ORAL Change: Original Value = " & thisValue & " Override = True" & ", New Value = " & newValue)
+							Else
+								toxNotes.Append("RLD50ORAL Change: Original Value = " & thisValue & " Override = False" & ", New Value = " & newValue)
+							End If
+						End If	
+									
+						If Me.Resource.Properties.GetItem("RLD50ORAL").Overridden = True Then
+							Me.Resource.Properties.GetItem("RLD50ORAL").Note = "Override Changed: " & Me.Resource.Properties.GetItem("RLD50ORAL").Value
+						End If
+						Me.Resource.Properties.GetItem("RLD50ORAL").Value = ld50Oral		
+					ElseIf (Not system.DbNull.Value.Equals(ATEOral)) AndAlso ATEOral IsNot Nothing AndAlso ATEOral <> String.Empty Then
+						
+						Dim currentValue As System.String = String.Empty
+						
+            If Me.Resource.Properties.GetItem("RLD50ORAL").Value IsNot Nothing AndAlso Me.Resource.Properties.GetItem("RLD50ORAL").Value <> String.Empty Then
+							currentValue = Me.Resource.Properties.GetItem("RLD50ORAL").Value.Trim
+						End If
+						
+            	Dim thisValue As System.String = currentValue
+            
+            'necessary to clean value string due to historic inconsistancies with data entry and IFRA manual
+           
+           Select Case True
+            Case thisValue.Contains(">")
+						thisValue = thisValue.Replace(">", "")
+            Case thisValue.Contains("<")
+						thisValue = thisValue.Replace("<", "")
+            Case thisValue.Contains("mg/kg")
+						thisValue = thisValue.Replace("mg/kg", "")
+            Case thisValue.Contains("mL/kg")
+						thisValue = thisValue.Replace("mL/kg", "")
+            Case thisValue.Contains("mg/l")
+						thisValue = thisValue.Replace("mg/l", "")
+            Case thisValue.Contains("mg/L")
+						thisValue = thisValue.Replace("mg/L", "")
+            Case thisValue.Contains("ppm")
+						thisValue = thisValue.Replace("ppm", "")
+            Case thisValue.Contains("Rat")
+						thisValue = thisValue.Replace("Rat", "")
+            Case thisValue.Contains("rat")
+						thisValue = thisValue.Replace("rat", "")
+            Case thisValue.Contains("Rabbit")
+						thisValue = thisValue.Replace("Rabbit", "")
+            Case thisValue.Contains("rabbit")
+						thisValue = thisValue.Replace("rabbit", "")
+            End Select
+            
+						thisValue = thisValue.Trim
+				
+						Dim newValue As System.String = CStr(ATEOral)
+						If newValue.Trim <> thisValue Then	
+							If toxNotes.Length > 0 Then
+								toxNotes.Append("; ")
+							End If	
+							If Me.Resource.Properties.GetItem("RLD50ORAL").Overridden = True Then
+								toxNotes.Append("RLD50ORAL Change: Original Value = " & thisValue & " Override = True" & ", New Value = " & newValue)
+							Else
+								toxNotes.Append("RLD50ORAL Change: Original Value = " & thisValue & " Override = False" & ", New Value = " & newValue)	
+							End If
+						End If			
+						If Me.Resource.Properties.GetItem("RLD50ORAL").Overridden = True Then
+							Me.Resource.Properties.GetItem("RLD50ORAL").Note = "Override Changed: " & Me.Resource.Properties.GetItem("RLD50ORAL").Value
+						End If
+						Me.Resource.Properties.GetItem("RLD50ORAL").Value = ATEOral 
+					End If
+				End If	
+        
+				'Dermal ATE
+				If Me.Resource.Properties.Contains("RLD50DERMAL") Then 
+					Dim ATEdermal = dtData.Rows.Item(0).Item("ATEDermal")
+					Dim ld50dermal = dtData.Rows.Item(0).Item("LD50Dermal")
+					If (Not system.DbNull.Value.Equals(ld50dermal)) AndAlso ld50dermal IsNot Nothing AndAlso ld50dermal <> String.Empty Then
+						Dim currentValue As System.String = String.Empty
+						If Me.Resource.Properties.GetItem("RLD50DERMAL").Value IsNot Nothing AndAlso Me.Resource.Properties.GetItem("RLD50DERMAL").Value <> String.Empty Then
+							currentValue = Me.Resource.Properties.GetItem("RLD50DERMAL").Value.Trim
+						End If
+							
+							Dim thisValue As System.String = currentValue     
+            'necessary to clean value string due to historic inconsistancies with data entry
+           
+           Select Case True
+            Case thisValue.Contains(">")
+						thisValue = thisValue.Replace(">", "")
+            Case thisValue.Contains("<")
+						thisValue = thisValue.Replace("<", "")
+            Case thisValue.Contains("mg/kg")
+						thisValue = thisValue.Replace("mg/kg", "")
+            Case thisValue.Contains("mL/kg")
+						thisValue = thisValue.Replace("mL/kg", "")
+            Case thisValue.Contains("mg/l")
+						thisValue = thisValue.Replace("mg/l", "")
+            Case thisValue.Contains("mg/L")
+						thisValue = thisValue.Replace("mg/L", "")
+            Case thisValue.Contains("ppm")
+						thisValue = thisValue.Replace("ppm", "")
+            Case thisValue.Contains("Rat")
+						thisValue = thisValue.Replace("Rat", "")
+            Case thisValue.Contains("rat")
+						thisValue = thisValue.Replace("rat", "")
+            Case thisValue.Contains("Rabbit")
+						thisValue = thisValue.Replace("Rabbit", "")
+            Case thisValue.Contains("rabbit")
+						thisValue = thisValue.Replace("rabbit", "")
+            End Select
+            
+						thisValue = thisValue.Trim		
+				
+						Dim newValue As System.String = CStr(ld50dermal)
+				
+						If newValue.Trim <> thisValue Then	
+							If toxNotes.Length > 0 Then
+								toxNotes.Append("; ")
+							End If	
+							If Me.Resource.Properties.GetItem("RLD50DERMAL").Overridden = True Then
+								toxNotes.Append("RLD50DERMAL Change: Original Value = " & thisValue & " Override = True" & ", New Value = " & newValue)
+							Else
+								toxNotes.Append("RLD50DERMAL Change: Original Value = " & thisValue & " Override = False" & ", New Value = " & newValue)	
+							End If
+						End If		
+						
+						If Me.Resource.Properties.GetItem("RLD50DERMAL").Overridden = True Then
+							Me.Resource.Properties.GetItem("RLD50DERMAL").Note = "Override Changed: " & Me.Resource.Properties.GetItem("RLD50DERMAL").Value
+						End If
+						Me.Resource.Properties.GetItem("RLD50DERMAL").Value = ld50dermal	
+					ElseIf (Not system.DbNull.Value.Equals(ATEdermal)) AndAlso ATEdermal IsNot Nothing AndAlso ATEdermal <> String.Empty Then
+					
+						Dim currentValue As System.String = String.Empty
+						If Me.Resource.Properties.GetItem("RLD50DERMAL").Value IsNot Nothing AndAlso Me.Resource.Properties.GetItem("RLD50DERMAL").Value <> String.Empty Then
+							currentValue = Me.Resource.Properties.GetItem("RLD50DERMAL").Value.Trim
+						End If
+            
+							Dim thisValue As System.String = currentValue
+            
+            'necessary to clean value string due to historic inconsistancies with data entry
+           
+           Select Case True
+            Case thisValue.Contains(">")
+						thisValue = thisValue.Replace(">", "")
+            Case thisValue.Contains("<")
+						thisValue = thisValue.Replace("<", "")
+            Case thisValue.Contains("mg/kg")
+						thisValue = thisValue.Replace("mg/kg", "")
+            Case thisValue.Contains("mL/kg")
+						thisValue = thisValue.Replace("mL/kg", "")
+            Case thisValue.Contains("mg/l")
+						thisValue = thisValue.Replace("mg/l", "")
+            Case thisValue.Contains("mg/L")
+						thisValue = thisValue.Replace("mg/L", "")
+            Case thisValue.Contains("ppm")
+						thisValue = thisValue.Replace("ppm", "")
+            Case thisValue.Contains("Rat")
+						thisValue = thisValue.Replace("Rat", "")
+            Case thisValue.Contains("rat")
+						thisValue = thisValue.Replace("rat", "")
+            Case thisValue.Contains("Rabbit")
+						thisValue = thisValue.Replace("Rabbit", "")
+            Case thisValue.Contains("rabbit")
+						thisValue = thisValue.Replace("rabbit", "")
+            End Select
+            
+						thisValue = thisValue.Trim		
+				
+						Dim newValue As System.String = CStr(ATEdermal)
+						If newValue <> thisValue Then	
+							If toxNotes.Length > 0 Then
+								toxNotes.Append("; ")
+							End If	
+							If Me.Resource.Properties.GetItem("RLD50DERMAL").Overridden = True Then
+								toxNotes.Append("RLD50DERMAL Change: Original Value = " & thisValue & " Override = True" & ", New Value = " & newValue)
+							Else
+								toxNotes.Append("RLD50DERMAL Change: Original Value = " & thisValue & " Override = False" & ", New Value = " & newValue)
+							End If
+						End If				
+						If Me.Resource.Properties.GetItem("RLD50DERMAL").Overridden = True Then
+							Me.Resource.Properties.GetItem("RLD50DERMAL").Note = "Override Changed: " & Me.Resource.Properties.GetItem("RLD50DERMAL").Value
+						End If
+						Me.Resource.Properties.GetItem("RLD50DERMAL").Value = ATEdermal 
+					End If			
+				End If
+        
+        
+				'Vapor ATE
+				If Me.Resource.Properties.Contains("RLC50VAPOR") Then 
+					Dim ATEvapor = dtData.Rows.Item(0).Item("ATEVapor")
+					Dim ld50vapor = dtData.Rows.Item(0).Item("LC50Vapor")
+					If (Not system.DbNull.Value.Equals(ld50vapor)) AndAlso ld50vapor IsNot Nothing AndAlso ld50vapor <> String.Empty Then
+						Dim currentValue As System.String = String.Empty
+						If Me.Resource.Properties.GetItem("RLC50VAPOR").Value IsNot Nothing AndAlso Me.Resource.Properties.GetItem("RLC50VAPOR").Value <> String.Empty Then
+							currentValue = Me.Resource.Properties.GetItem("RLC50VAPOR").Value.Trim
+						End If
+						
+							Dim thisValue As System.String = currentValue
+            
+            'necessary to clean value string due to historic inconsistancies with data entry
+           
+            Select Case True
+            Case thisValue.Contains(">")
+						thisValue = thisValue.Replace(">", "")
+            Case thisValue.Contains("<")
+						thisValue = thisValue.Replace("<", "")
+            Case thisValue.Contains("mg/kg")
+						thisValue = thisValue.Replace("mg/kg", "")
+            Case thisValue.Contains("mL/kg")
+						thisValue = thisValue.Replace("mL/kg", "")
+            Case thisValue.Contains("mg/l")
+						thisValue = thisValue.Replace("mg/l", "")
+            Case thisValue.Contains("mg/L")
+						thisValue = thisValue.Replace("mg/L", "")
+            Case thisValue.Contains("ppm")
+						thisValue = thisValue.Replace("ppm", "")
+            Case thisValue.Contains("Rat")
+						thisValue = thisValue.Replace("Rat", "")
+            Case thisValue.Contains("rat")
+						thisValue = thisValue.Replace("rat", "")
+            Case thisValue.Contains("Rabbit")
+						thisValue = thisValue.Replace("Rabbit", "")
+            Case thisValue.Contains("rabbit")
+						thisValue = thisValue.Replace("rabbit", "")
+            End Select
+            
+						thisValue = thisValue.Trim		
+				
+						Dim newValue As System.String = CStr(ld50vapor)
+				
+						If newValue.Trim <> thisValue Then	
+							If toxNotes.Length > 0 Then
+								toxNotes.Append("; ")
+							End If	
+							If Me.Resource.Properties.GetItem("RLC50VAPOR").Overridden = True Then
+								toxNotes.Append("RLC50VAPOR Change: Original Value = " & thisValue & " Override = True" & ", New Value = " & newValue)
+							Else
+								toxNotes.Append("RLC50VAPOR Change: Original Value = " & thisValue & " Override = False" & ", New Value = " & newValue)
+							End If
+						End If			
+						If Me.Resource.Properties.GetItem("RLC50VAPOR").Overridden = True Then
+							Me.Resource.Properties.GetItem("RLC50VAPOR").Note = "Override Changed: " & Me.Resource.Properties.GetItem("RLC50VAPOR").Value
+						End If
+						Me.Resource.Properties.GetItem("RLC50VAPOR").Value = ld50vapor	
+					
+          ElseIf (Not system.DbNull.Value.Equals(ATEvapor)) AndAlso ATEvapor IsNot Nothing AndAlso ATEvapor <> String.Empty Then
+						
+						Dim currentValue As System.String = String.Empty
+						If Me.Resource.Properties.GetItem("RLC50VAPOR").Value IsNot Nothing AndAlso Me.Resource.Properties.GetItem("RLC50VAPOR").Value <> String.Empty Then
+							currentValue = Me.Resource.Properties.GetItem("RLC50VAPOR").Value.Trim
+						End If
+            
+							Dim thisValue As System.String = currentValue
+            
+            'necessary to clean value string due to historic inconsistancies with data entry
+           
+           Select Case True
+            Case thisValue.Contains(">")
+						thisValue = thisValue.Replace(">", "")
+            Case thisValue.Contains("<")
+						thisValue = thisValue.Replace("<", "")
+            Case thisValue.Contains("mg/kg")
+						thisValue = thisValue.Replace("mg/kg", "")
+            Case thisValue.Contains("mL/kg")
+						thisValue = thisValue.Replace("mL/kg", "")
+            Case thisValue.Contains("mg/l")
+						thisValue = thisValue.Replace("mg/l", "")
+            Case thisValue.Contains("mg/L")
+						thisValue = thisValue.Replace("mg/L", "")
+            Case thisValue.Contains("ppm")
+						thisValue = thisValue.Replace("ppm", "")
+            Case thisValue.Contains("Rat")
+						thisValue = thisValue.Replace("Rat", "")
+            Case thisValue.Contains("rat")
+						thisValue = thisValue.Replace("rat", "")
+            Case thisValue.Contains("Rabbit")
+						thisValue = thisValue.Replace("Rabbit", "")
+            Case thisValue.Contains("rabbit")
+						thisValue = thisValue.Replace("rabbit", "")
+            End Select
+            
+						thisValue = thisValue.Trim		
+				
+						Dim newValue As System.String = CStr(ATEvapor)
+				
+						If newValue.Trim <> thisValue Then	
+							If toxNotes.Length > 0 Then
+								toxNotes.Append("; ")
+							End If	
+							If Me.Resource.Properties.GetItem("RLC50VAPOR").Overridden = True Then
+								toxNotes.Append("RLC50VAPOR Change: Original Value = " & thisValue & " Override = True" & ", New Value = " & newValue)
+							Else
+								toxNotes.Append("RLC50VAPOR Change: Original Value = " & thisValue & " Override = False" & ", New Value = " & newValue)
+							End If
+						End If						
+						If Me.Resource.Properties.GetItem("RLC50VAPOR").Overridden = True Then
+							Me.Resource.Properties.GetItem("RLC50VAPOR").Note = "Override Changed: " & Me.Resource.Properties.GetItem("RLC50VAPOR").Value
+						End If
+						Me.Resource.Properties.GetItem("RLC50VAPOR").Value = ATEvapor
+					End If
+				End If
+        
+        
+				'Dust ATE
+				If Me.Resource.Properties.Contains("RLC50DUST") Then 
+					Dim ATEDust = dtData.Rows.Item(0).Item("ATEDust")
+					Dim LC50Dust = dtData.Rows.Item(0).Item("LC50Dust")
+					If (Not system.DbNull.Value.Equals(LC50Dust)) AndAlso LC50Dust IsNot Nothing AndAlso LC50Dust <> String.Empty Then
+						Dim currentValue As System.String = String.Empty
+						If Me.Resource.Properties.GetItem("RLC50DUST").Value IsNot Nothing AndAlso Me.Resource.Properties.GetItem("RLC50DUST").Value <> String.Empty Then
+							currentValue = Me.Resource.Properties.GetItem("RLC50DUST").Value.Trim
+						End If
+						
+						Dim thisValue As System.String = currentValue
+            
+            'necessary to clean value string due to historic inconsistancies with data entry
+           
+            Select Case True
+            Case thisValue.Contains(">")
+						thisValue = thisValue.Replace(">", "")
+            Case thisValue.Contains("<")
+						thisValue = thisValue.Replace("<", "")
+            Case thisValue.Contains("mg/kg")
+						thisValue = thisValue.Replace("mg/kg", "")
+            Case thisValue.Contains("mL/kg")
+						thisValue = thisValue.Replace("mL/kg", "")
+            Case thisValue.Contains("mg/l")
+						thisValue = thisValue.Replace("mg/l", "")
+            Case thisValue.Contains("mg/L")
+						thisValue = thisValue.Replace("mg/L", "")
+            Case thisValue.Contains("ppm")
+						thisValue = thisValue.Replace("ppm", "")
+            Case thisValue.Contains("Rat")
+						thisValue = thisValue.Replace("Rat", "")
+            Case thisValue.Contains("rat")
+						thisValue = thisValue.Replace("rat", "")
+            Case thisValue.Contains("Rabbit")
+						thisValue = thisValue.Replace("Rabbit", "")
+            Case thisValue.Contains("rabbit")
+						thisValue = thisValue.Replace("rabbit", "")
+            End Select
+            
+						thisValue = thisValue.Trim		
+				
+						Dim newValue As System.String = CStr(LC50Dust)
+				
+						If newValue.Trim <> thisValue Then	
+							If toxNotes.Length > 0 Then
+								toxNotes.Append("; ")
+							End If	
+							If Me.Resource.Properties.GetItem("RLC50DUST").Overridden = True Then
+								toxNotes.Append("RLC50DUST Change: Original Value = " & thisValue & " Override = True" & ", New Value = " & newValue)
+							Else
+								toxNotes.Append("RLC50DUST Change: Original Value = " & thisValue & " Override = False" & ", New Value = " & newValue)
+							End If
+						End If									
+						If Me.Resource.Properties.GetItem("RLC50DUST").Overridden = True Then
+							Me.Resource.Properties.GetItem("RLC50DUST").Note = "Override Changed: " & Me.Resource.Properties.GetItem("RLC50DUST").Value
+						End If
+						Me.Resource.Properties.GetItem("RLC50DUST").Value = LC50Dust	
+					ElseIf (Not system.DbNull.Value.Equals(ATEDust)) AndAlso ATEDust IsNot Nothing AndAlso ATEDust <> String.Empty Then
+						Dim currentValue As System.String = String.Empty
+						If Me.Resource.Properties.GetItem("RLC50DUST").Value IsNot Nothing AndAlso Me.Resource.Properties.GetItem("RLC50DUST").Value <> String.Empty Then
+							currentValue = Me.Resource.Properties.GetItem("RLC50DUST").Value.Trim
+						End If
+            
+						Dim thisValue As System.String = currentValue
+            
+            'necessary to clean value string due to historic inconsistancies with data entry
+           
+            Select Case True
+            Case thisValue.Contains(">")
+						thisValue = thisValue.Replace(">", "")
+            Case thisValue.Contains("<")
+						thisValue = thisValue.Replace("<", "")
+            Case thisValue.Contains("mg/kg")
+						thisValue = thisValue.Replace("mg/kg", "")
+            Case thisValue.Contains("mL/kg")
+						thisValue = thisValue.Replace("mL/kg", "")
+            Case thisValue.Contains("mg/l")
+						thisValue = thisValue.Replace("mg/l", "")
+            Case thisValue.Contains("mg/L")
+						thisValue = thisValue.Replace("mg/L", "")
+            Case thisValue.Contains("ppm")
+						thisValue = thisValue.Replace("ppm", "")
+            Case thisValue.Contains("Rat")
+						thisValue = thisValue.Replace("Rat", "")
+            Case thisValue.Contains("rat")
+						thisValue = thisValue.Replace("rat", "")
+            Case thisValue.Contains("Rabbit")
+						thisValue = thisValue.Replace("Rabbit", "")
+            Case thisValue.Contains("rabbit")
+						thisValue = thisValue.Replace("rabbit", "")
+            End Select   
+						thisValue = thisValue.Trim		
+				
+						Dim newValue As System.String = CStr(ATEDust)
+				
+						If newValue.Trim <> thisValue Then	
+							If toxNotes.Length > 0 Then
+								toxNotes.Append("; ")
+							End If	
+							If Me.Resource.Properties.GetItem("RLC50DUST").Overridden = True Then
+								toxNotes.Append("RLC50DUST Change: Original Value = " & thisValue & " Override = True" & ", New Value = " & newValue)
+							Else
+								toxNotes.Append("RLC50DUST Change: Original Value = " & thisValue & " Override = False" & ", New Value = " & newValue)
+							End If
+						End If			
+						If Me.Resource.Properties.GetItem("RLC50DUST").Overridden = True Then
+							Me.Resource.Properties.GetItem("RLC50DUST").Note = "Override Changed: " & Me.Resource.Properties.GetItem("RLC50DUST").Value
+						End If
+						Me.Resource.Properties.GetItem("RLC50DUST").Value = ATEDust
+					End If
+				End If
+        
+        
+				'Gas ATE
+				If Me.Resource.Properties.Contains("RLC50GAS") Then 
+					Dim ATEGas = dtData.Rows.Item(0).Item("ATEGas")
+					Dim LC50Gas = dtData.Rows.Item(0).Item("LC50Gas")
+					If (Not system.DbNull.Value.Equals(LC50Gas)) AndAlso LC50Gas IsNot Nothing AndAlso LC50Gas <> String.Empty Then
+						Dim currentValue As System.String = String.Empty
+						If Me.Resource.Properties.GetItem("RLC50GAS").Value IsNot Nothing AndAlso Me.Resource.Properties.GetItem("RLC50GAS").Value <> String.Empty Then
+							currentValue = Me.Resource.Properties.GetItem("RLC50GAS").Value.Trim
+						End If
+						
+						Dim thisValue As System.String = currentValue
+            
+            'necessary to clean value string due to historic inconsistancies with data entry
+           
+            Select Case True
+            Case thisValue.Contains(">")
+						thisValue = thisValue.Replace(">", "")
+            Case thisValue.Contains("<")
+						thisValue = thisValue.Replace("<", "")
+            Case thisValue.Contains("mg/kg")
+						thisValue = thisValue.Replace("mg/kg", "")
+            Case thisValue.Contains("mL/kg")
+						thisValue = thisValue.Replace("mL/kg", "")
+            Case thisValue.Contains("mg/l")
+						thisValue = thisValue.Replace("mg/l", "")
+            Case thisValue.Contains("mg/L")
+						thisValue = thisValue.Replace("mg/L", "")
+            Case thisValue.Contains("ppm")
+						thisValue = thisValue.Replace("ppm", "")
+            Case thisValue.Contains("Rat")
+						thisValue = thisValue.Replace("Rat", "")
+            Case thisValue.Contains("rat")
+						thisValue = thisValue.Replace("rat", "")
+            Case thisValue.Contains("Rabbit")
+						thisValue = thisValue.Replace("Rabbit", "")
+            Case thisValue.Contains("rabbit")
+						thisValue = thisValue.Replace("rabbit", "")
+            End Select
+            
+						thisValue = thisValue.Trim		
+				
+						Dim newValue As System.String = CStr(LC50Gas)
+				
+						If newValue.Trim <> thisValue Then	
+							If toxNotes.Length > 0 Then
+								toxNotes.Append("; ")
+							End If	
+							If Me.Resource.Properties.GetItem("RLC50GAS").Overridden = True Then
+								toxNotes.Append("RLC50GAS Change: Original Value = " & thisValue & " Override = True" & ", New Value = " & newValue)
+							Else
+								toxNotes.Append("RLC50GAS Change: Original Value = " & thisValue & " Override = False" & ", New Value = " & newValue)	
+							End If
+						End If	
+						If Me.Resource.Properties.GetItem("RLC50GAS").Overridden = True Then
+							Me.Resource.Properties.GetItem("RLC50GAS").Note = "Override Changed: " & Me.Resource.Properties.GetItem("RLC50GAS").Value
+						End If
+						Me.Resource.Properties.GetItem("RLC50GAS").Value = LC50Gas
+					ElseIf (Not system.DbNull.Value.Equals(ATEGas)) AndAlso ATEGas IsNot Nothing AndAlso ATEGas <> String.Empty Then
+						Dim currentValue As System.String = String.Empty
+						If Me.Resource.Properties.GetItem("RLC50GAS").Value IsNot Nothing AndAlso Me.Resource.Properties.GetItem("RLC50GAS").Value <> String.Empty Then
+							currentValue = Me.Resource.Properties.GetItem("RLC50GAS").Value.Trim
+						End If
+              
+						Dim thisValue As System.String = currentValue
+            
+            'necessary to clean value string due to historic inconsistancies with data entry
+           
+            Select Case True
+            Case thisValue.Contains(">")
+						thisValue = thisValue.Replace(">", "")
+            Case thisValue.Contains("<")
+						thisValue = thisValue.Replace("<", "")
+            Case thisValue.Contains("mg/kg")
+						thisValue = thisValue.Replace("mg/kg", "")
+            Case thisValue.Contains("mL/kg")
+						thisValue = thisValue.Replace("mL/kg", "")
+            Case thisValue.Contains("mg/l")
+						thisValue = thisValue.Replace("mg/l", "")
+            Case thisValue.Contains("mg/L")
+						thisValue = thisValue.Replace("mg/L", "")
+            Case thisValue.Contains("ppm")
+						thisValue = thisValue.Replace("ppm", "")
+            Case thisValue.Contains("Rat")
+						thisValue = thisValue.Replace("Rat", "")
+            Case thisValue.Contains("rat")
+						thisValue = thisValue.Replace("rat", "")
+            Case thisValue.Contains("Rabbit")
+						thisValue = thisValue.Replace("Rabbit", "")
+            Case thisValue.Contains("rabbit")
+						thisValue = thisValue.Replace("rabbit", "")
+            End Select
+            
+						thisValue = thisValue.Trim		
+				
+						Dim newValue As System.String = CStr(ATEGas)
+				
+						If newValue.Trim <> thisValue Then	
+							If toxNotes.Length > 0 Then
+								toxNotes.Append("; ")
+							End If	
+							If Me.Resource.Properties.GetItem("RLC50GAS").Overridden = True Then
+								toxNotes.Append("RLC50GAS Change: Original Value = " & thisValue & " Override = True" & ", New Value = " & newValue)
+							Else
+								toxNotes.Append("RLC50GAS Change: Original Value = " & thisValue & " Override = False" & ", New Value = " & newValue)
+							End If
+						End If		
+						If Me.Resource.Properties.GetItem("RLC50GAS").Overridden = True Then
+							Me.Resource.Properties.GetItem("RLC50GAS").Note = "Override Changed: " & Me.Resource.Properties.GetItem("RLC50GAS").Value
+						End If
+						Me.Resource.Properties.GetItem("RLC50GAS").Value = ATEGas
+					End If
+				End If
+
+				If toxNotes.Length > 0 Then
+					If Me.Resource.Properties.Contains("ATOXCHANGENOTES") Then
+						Me.Resource.Properties.GetItem("ATOXCHANGENOTES").Value = String.Empty
+					End If
+					toxNotes.Append(" - (" & newDate & ")") 
+					If Me.Resource.Properties.Contains("ATOXCHANGENOTES") Then
+						Me.Resource.Properties.GetItem("ATOXCHANGENOTES").Value = toxNotes.ToString
+					End If
+				End If
+				
+				'HAZARD STATEMENTS	
+				'Must process string as it comes for more plug & play compatibility - more code	
+				Dim newClassString As New System.Text.StringBuilder
+				Dim string1 As System.String = dtData.Rows.Item(0).Item("GHSClass").Trim
+				If Not system.DbNull.Value.Equals(string1) Then
+					If (string1 IsNot Nothing OrElse string1 <> String.Empty) AndAlso string1 <> "NC" Then
+							Dim spString1() As System.String = string1.split("|")
+							For d As System.Integer = 0 To spString1.Length - 1
+								Dim item As System.String = spString1(d)		
+								Dim semiIndex As System.Int32 = item.IndexOf(";")					
+								Dim sub1 As System.String = item.substring(0, semiIndex)
+								Dim subnumber As System.String = String.Empty
+                
+                If sub1.Contains("1) Then           
+                  Select Case True
+                  Case sub1.contains("1A")
+										  subnumber = "1A"
+								  Case sub1.contains("1B")
+										  subnumber = "1B"
+								  Case sub1.contains("1C")
+										  subnumber = "1C"
+								  Case sub1.contains("1D")
+										  subnumber = "1D"
+								  Case Else
+										  subnumber = "1"			
+								  End Select   
+								ElseIf sub1.Contains("2") Then				
+									Select Case True
+                  Case sub1.contains("2A")
+										subnumber = "2A"
+									Case sub1.contains("2B")
+										subnumber = "2B"
+									Case sub1.contains("2C")
+										subnumber = "2C"
+									Case sub1.contains("2D")
+										subnumber = "2D"
+									Case Else
+										subnumber = "2"
+									End Select		
+								End If
+	
+								Dim hCodeL As System.Int32 = item.Length - 1
+								Dim semiIndexPlus1 As System.Int32 = item.IndexOf(";") + 1				
+								Dim hCode As System.String = item.substring(semiIndexPlus1)	
+								If newclassString.Length > 1 Then
+									newClassString.Append(",")
+								End If
+                
+                Select Case True
+                
+								Case hCode.Contains("H335")
+									newClassString.Append(hCode.Trim)
+								Case hCode.Contains("H371")
+									newClassString.Append(hCode.Trim)
+								Case hcode.Contains("H319")
+									newClassString.Append(hCode.Trim)
+								Case hCode.Contains("H320")
+									newClassString.Append(hCode.Trim)
+								Case hCode.Contains("H336")
+									newClassString.Append(hCode.Trim)
+								Case hCode.Contains("H318")
+									newClassString.Append(hCode.Trim)
+								Case hCode.Contains("H372")
+									newClassString.Append(hCode.Trim)
+								End Select
+                
+                If subnumber Is Nothing OrElse subnumber = String.Empty Then
+									newClassString.Append(hCode.Trim)
+								Else
+									newClassString.Append(hCode.Trim & "-" & subnumber.Trim)
+								End If
+							Next					
+						End If			
+					End If		
+          
+					'Delete only US, Canada, and EU statements'
+					For e As Integer = Me.Resource.RegulatoryGHSHazardStatements.Count - 1 To 0 Step -1
+						If Me.Resource.RegulatoryGHSHazardStatements.Item(e).GHSCountryId = 100 OrElse Me.Resource.RegulatoryGHSHazardStatements.Item(e).GHSCountryId = 101 OrElse Me.Resource.RegulatoryGHSHazardStatements.Item(e).GHSCountryId = 2 Then
+							Me.Resource.RegulatoryGHSHazardStatements.DeleteItem(e)
+						End If
+					Next		
+          
+					Me.Resource.RegulatoryInfo.Hazardous = True
+					'US should be countryID as default'
+					Dim countryId As system.int64 = 100
+					Dim ghsString As System.String = NewClassString.ToString
+					Dim statementString As System.String = ghsString.Split(","c)
+					Dim ghsCheck As System.String = String.Empty		
+					For Each GHSStatement As System.String In statementString						
+						With New AdvancedSoftwareDesigns.SQL.Commands.Select(BusinessObjects.GlobalApp.SqlFactory)
+							.From.Add("rcstatement")
+							.Column.Add("fmObjectId")
+							With .Where
+								With .Add
+									.ExprLeft("rccode")
+									.Parameters.Add(GHSStatement)
+								End With 	
+							End With
+							ghsCheck = BusinessObjects.GlobalApp.QueryServer.ExecuteScalar(.Me)		
+						End With
+					
+          If ghscheck IsNot Nothing OrElse ghsCheck <> String.Empty Then								
+							If Me.Resource.RegulatoryGHSHazardStatements.IndexOf(GHSStatement, countryId) < 0 Then				
+								Me.Resource.RegulatoryGHSHazardStatements.Addlist(GHSStatement, "", True, 100)	
+							End If					
+							countryId = 101
+							If Me.Resource.RegulatoryGHSHazardStatements.IndexOf(GHSStatement, countryId) < 0 Then
+								Me.Resource.RegulatoryGHSHazardStatements.AddList(GHSStatement, "", True, 101)
+							End If	
+							countryId = 2
+							If Me.Resource.RegulatoryGHSHazardStatements.IndexOf(GHSStatement, countryId) < 0 Then
+								Me.Resource.RegulatoryGHSHazardStatements.AddList(GHSStatement, "", True, 2)
+							End If
+						Else
+							Dim substr As System.String = String.Nothing
+							Dim indexOfHyphen As System.Int32 = GHSstatement.IndexOf("-")
+							If indexOfHyphen >= 0 Then
+								substr = GHSstatement.Substring(0, IndexOfHyphen)			
+								With New AdvancedSoftwareDesigns.SQL.Commands.Select(BusinessObjects.GlobalApp.SqlFactory)
+									.From.Add("rcstatement")
+									.Column.Add("fmObjectId")
+									With .Where
+										With .Add
+											.ExprLeft("rccode")
+											.Parameters.Add(substr.Trim)
+										End With 	
+									End With
+									ghsCheck = BusinessObjects.GlobalApp.QueryServer.ExecuteScalar(.Me)				
+								End With				
+								If ghscheck IsNot Nothing OrElse ghsCheck <> String.Empty Then			
+									If Me.Resource.RegulatoryGHSHazardStatements.IndexOf(substr, countryId) < 0 Then				
+										Me.Resource.RegulatoryGHSHazardStatements.Addlist(substr, "", True, 100)					
+									End If
+									countryId = 101
+									If Me.Resource.RegulatoryGHSHazardStatements.IndexOf(substr, countryId) < 0 Then
+										Me.Resource.RegulatoryGHSHazardStatements.AddList(substr, "", True, 101)
+									End If
+									countryId = 2
+									If Me.Resource.RegulatoryGHSHazardStatements.IndexOf(substr, countryId) < 0 Then
+										Me.Resource.RegulatoryGHSHazardStatements.AddList(substr, "", True, 2)
+									End If
+								End If
+							End If
+						End If	
+					Next			
+			End If
+		End If	
+	End Function
+End Class
